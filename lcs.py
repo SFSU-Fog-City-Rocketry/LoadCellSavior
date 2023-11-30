@@ -2,11 +2,13 @@ import os
 import sys
 import glob
 import time
-import serial
 import signal
 import logging
+import numpy as np
 from rich import print
+import matplotlib.pyplot as plt
 from rich.logging import RichHandler
+from serial import Serial, SerialException
 
 FORMAT = "%(message)s"
 logging.basicConfig(
@@ -112,14 +114,14 @@ Time is stored in milliseconds and is counted from the moment this program estab
             match OS.lower():
                 case "windows":
                     PORT = "COM4"
-                case "mac":
+                case "mac":\
                     PORT = "/dev/ttyUSB0"
                 case "linux":
                     PORT = "/dev/ttyUSB0"
     
     try:
-        arduino = serial.Serial(PORT, BAUD)
-    except serial.SerialException:
+        arduino = Serial(PORT, BAUD)
+    except SerialException:
         log.fatal(f"Serial Exception: Could not connect to {PORT} at {BAUD} baud.")
         log.fatal("Check your connections and try again.")
         sys.exit(1)
@@ -130,32 +132,44 @@ Time is stored in milliseconds and is counted from the moment this program estab
     while True:
         loop()
 
+plot_data = {
+    "Time (ms)": [],
+    "Reading (grams)": []
+}
+
+plot_counter = 0
 def loop():
-    global csv_text, ms_since_start, arduino
+    global csv_text, ms_since_start, arduino, plot_data, plot_counter
     if arduino is None or not arduino.is_open:
         log.fatal("Serial connection closed unexpectedly.")
         sys.exit(1)
     
     # Read the serial data
-    data = arduino.readline().decode("utf-8").strip()
+    data = arduino.readline(8).decode("utf-8").strip()
+    if VERBOSE: log.debug(f"\"{data}\"")
     # If the data is empty, ignore it
     if data == "":
         return
     # If the data is not a number, ignore it
     try:
-        data = int(data)
+        data = float(data)
     except ValueError:
         return
+    
+    # current_time = datetime.now()
+    # formatted_time = current_time.strftime('%H:%M:%S')
+    plot_data["Time (ms)"].append(ms_since_start)
+    plot_data["Reading (grams)"].append(data)
     
     # Increment the time
     ms_since_start = int(time.time() * 1000) - ms_at_start
     # Add the data to the csv text
     csv_text += f"{ms_since_start},{data}\n"
-    # Print the data if debug prints are enabled
-    if VERBOSE: print(f"{ms_since_start} ms: {data} grams")
+    
 
 sigint_count = 0
-def handle_sigint():
+def handle_sigint(signum, frame):
+    global sigint_count, plot_data
     if (sigint_count > 0):
         log.fatal("SIGINT received twice, exiting.")
         sys.exit(1)
@@ -175,12 +189,26 @@ def handle_sigint():
     # Extract the numbers from these filenames
     numbers = [int(os.path.splitext(os.path.basename(file))[0].split('_')[1]) for file in files]
     # Get the highest number
-    highest = max(numbers)
+    NUMBER = (max(numbers) + 1) if len(numbers) != 0 else 1
     # Create the new filename
-    filename = f"LoadCellData_{highest + 1}.csv"
+    filename = f"LoadCellData_{NUMBER}.csv"
     # Write the data to the file
+    open(f"{OUTPUT_DIR}/{filename}","x")
     with open(f"{OUTPUT_DIR}/{filename}", "w") as f:
         f.write(csv_text)
+    
+    # Plot the data
+    x = np.array(plot_data["Time (ms)"], dtype="float64")
+    y = np.array(plot_data["Reading (grams)"], dtype="float64")
+
+    plt.plot(x,y)
+    plt.scatter(x,y)
+
+    plt.grid()
+    plt.xlabel("Time (Milliseconds)")
+    plt.ylabel("Reading (Grams)")
+    plt.savefig(f"{OUTPUT_DIR}/LoadCellPlot_{NUMBER}")
+
     log.info(f"Saved data to {OUTPUT_DIR}/{filename}")
     log.info("Exiting.")
     sys.exit(0)
@@ -188,4 +216,6 @@ def handle_sigint():
 signal.signal(signal.SIGINT, handle_sigint)
     
 if __name__ == "__main__":
+    if not os.path.exists("./OutputData"):
+        os.makedirs("./OutputData")
     startup()
